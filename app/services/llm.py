@@ -1,0 +1,628 @@
+"""
+LLM Service Integration
+
+Handles communication with LLM API for natural language processing.
+Extracts intent, entities, and generates conversational responses for appointment booking.
+"""
+
+import json
+import logging
+from datetime import datetime, date, timedelta
+from typing import Any, Callable, Dict, List, Optional
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class LLMError(Exception):
+    """Custom exception for LLM service errors."""
+    pass
+
+
+class LLMService:
+    """
+    Service for interacting with Language Model APIs.
+
+    Handles intent extraction, entity recognition, and response generation
+    for appointment booking conversations.
+    """
+
+    # Strong system prompt for appointment booking assistant
+    SYSTEM_PROMPT = """You are an intelligent appointment booking assistant. Your primary role is to help users book, check, reschedule, or cancel appointments through natural conversation.
+
+## Core Responsibilities:
+1. Extract user intent from natural language
+2. Identify and validate appointment details (date, time, service type)
+3. Request missing information politely
+4. Provide clear, helpful responses
+5. Output structured JSON for system processing
+
+## Supported Intents:
+- **book_appointment**: User wants to create a new appointment
+- **check_availability**: User wants to see available time slots
+- **reschedule_appointment**: User wants to change an existing appointment
+- **cancel_appointment**: User wants to cancel an appointment
+- **smalltalk**: General conversation, greetings, or off-topic queries
+
+## Date/Time Handling Rules:
+- Accept natural language dates: "tomorrow", "next Monday", "December 15th", "11/25/2025"
+- Accept time formats: "2pm", "14:00", "2:30 PM", "afternoon"
+- Convert relative dates to absolute dates (use current date: November 23, 2025)
+- Validate dates are in the future
+- Business hours: 9:00 AM to 5:00 PM, Monday-Friday
+- Appointment slots: 30-minute increments
+
+## Response Format:
+You MUST respond with VALID JSON only. No markdown, no explanations outside the JSON.
+
+Required JSON structure:
+{
+    "intent": "book_appointment|check_availability|reschedule_appointment|cancel_appointment|smalltalk",
+    "confidence": 0.0-1.0,
+    "entities": {
+        "date": "YYYY-MM-DD" or null,
+        "time": "HH:MM" or null,
+        "service_type": "string or null",
+        "appointment_id": "integer or null"
+    },
+    "missing_info": ["list of missing required fields"],
+    "user_message": "natural language response to user",
+    "action": "proceed|ask_clarification|provide_info",
+    "metadata": {
+        "date_original": "user's original date expression",
+        "time_original": "user's original time expression",
+        "ambiguous_fields": []
+    }
+}
+
+## Validation Rules:
+- If date is missing for booking: add "date" to missing_info
+- If time is missing for booking: add "time" to missing_info
+- If date/time is ambiguous: set action to "ask_clarification"
+- If intent is unclear: set confidence < 0.7 and ask clarifying question
+- For cancellation: require appointment_id or date+time to identify appointment
+
+## Examples:
+
+User: "I want to book an appointment tomorrow at 2pm"
+Response:
+{
+    "intent": "book_appointment",
+    "confidence": 0.95,
+    "entities": {
+        "date": "2025-11-24",
+        "time": "14:00",
+        "service_type": null,
+        "appointment_id": null
+    },
+    "missing_info": [],
+    "user_message": "I can book you for tomorrow, November 24th at 2:00 PM. Would you like to confirm this appointment?",
+    "action": "proceed",
+    "metadata": {
+        "date_original": "tomorrow",
+        "time_original": "2pm",
+        "ambiguous_fields": []
+    }
+}
+
+User: "I need to come in next week"
+Response:
+{
+    "intent": "book_appointment",
+    "confidence": 0.85,
+    "entities": {
+        "date": null,
+        "time": null,
+        "service_type": null,
+        "appointment_id": null
+    },
+    "missing_info": ["date", "time"],
+    "user_message": "I'd be happy to help you book an appointment for next week. Which day works best for you? We're open Monday through Friday, 9 AM to 5 PM.",
+    "action": "ask_clarification",
+    "metadata": {
+        "date_original": "next week",
+        "time_original": null,
+        "ambiguous_fields": ["date", "time"]
+    }
+}
+
+User: "What's available on Friday?"
+Response:
+{
+    "intent": "check_availability",
+    "confidence": 0.90,
+    "entities": {
+        "date": "2025-11-28",
+        "time": null,
+        "service_type": null,
+        "appointment_id": null
+    },
+    "missing_info": [],
+    "user_message": "Let me check available time slots for Friday, November 28th.",
+    "action": "proceed",
+    "metadata": {
+        "date_original": "Friday",
+        "time_original": null,
+        "ambiguous_fields": []
+    }
+}
+
+User: "Cancel my appointment"
+Response:
+{
+    "intent": "cancel_appointment",
+    "confidence": 0.80,
+    "entities": {
+        "date": null,
+        "time": null,
+        "service_type": null,
+        "appointment_id": null
+    },
+    "missing_info": ["appointment_id"],
+    "user_message": "I can help you cancel your appointment. Could you tell me which appointment you'd like to cancel? You can specify the date and time, or I can show you your upcoming appointments.",
+    "action": "ask_clarification",
+    "metadata": {
+        "date_original": null,
+        "time_original": null,
+        "ambiguous_fields": ["appointment_id"]
+    }
+}
+
+## Important Notes:
+- Always be polite and professional
+- If user provides partial information, acknowledge what you have and ask for what's missing
+- If you cannot understand the intent, set intent to "smalltalk" and ask for clarification
+- NEVER make up information - only extract what the user provides
+- Always output valid JSON
+"""
+
+    def __init__(
+        self,
+        repository_callback: Optional[Callable] = None,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 500,
+    ):
+        """
+        Initialize LLM Service.
+
+        Args:
+            repository_callback: Callable for accessing repository functions
+            api_key: API key for LLM provider (defaults to settings)
+            model: Model name (defaults to settings)
+            temperature: Sampling temperature (0.0-2.0)
+            max_tokens: Maximum tokens in response
+        """
+        self.api_key = api_key or settings.openai_api_key
+        self.model = model or settings.openai_model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.repository_callback = repository_callback
+
+        # Conversation context management
+        self.conversation_context: Dict[str, Any] = {}
+
+        logger.info(f"LLMService initialized with model: {self.model}")
+
+    async def generate_response(
+        self,
+        message: str,
+        conversation_state: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate intelligent response based on user message.
+
+        Args:
+            message: User's input message
+            conversation_state: Current conversation state/context
+
+        Returns:
+            Dictionary containing intent, entities, and response
+
+        Raises:
+            LLMError: If LLM API call fails
+
+        Example:
+            >>> llm = LLMService()
+            >>> result = await llm.generate_response(
+            ...     "I want to book for tomorrow at 2pm",
+            ...     conversation_state={"customer_id": 123}
+            ... )
+            >>> print(result["intent"])
+            "book_appointment"
+        """
+        try:
+            # Build context for LLM
+            context = self._build_context(message, conversation_state)
+
+            # Send request to LLM
+            response = await self._send_request_to_model(
+                system_prompt=self.SYSTEM_PROMPT,
+                user_message=message,
+                context=context,
+            )
+
+            # Parse and validate response
+            parsed_response = self._parse_llm_response(response)
+
+            # Enrich response with additional context
+            enriched_response = await self._enrich_response(
+                parsed_response, conversation_state
+            )
+
+            logger.info(
+                f"Generated response for intent: {enriched_response.get('intent')} "
+                f"with confidence: {enriched_response.get('confidence')}"
+            )
+
+            return enriched_response
+
+        except Exception as e:
+            logger.error(f"Error generating LLM response: {e}")
+            raise LLMError(f"Failed to generate response: {str(e)}") from e
+
+    async def _send_request_to_model(
+        self,
+        system_prompt: str,
+        user_message: str,
+        context: Dict[str, Any],
+    ) -> str:
+        """
+        Send request to LLM API (OpenAI, Claude, etc.).
+
+        This is a placeholder method that should be implemented with actual
+        API integration (OpenAI, Anthropic Claude, etc.).
+
+        Args:
+            system_prompt: System instructions for the model
+            user_message: User's message
+            context: Additional context for the conversation
+
+        Returns:
+            Raw response from the LLM API
+
+        TODO: Implement actual API integration
+        """
+        # Placeholder implementation
+        # Replace this with actual OpenAI/Claude API call
+
+        logger.debug(f"Sending request to model: {self.model}")
+        logger.debug(f"User message: {user_message}")
+        logger.debug(f"Context: {context}")
+
+        # Example OpenAI API integration (commented out):
+        """
+        from openai import AsyncOpenAI
+        
+        client = AsyncOpenAI(api_key=self.api_key)
+        
+        response = await client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Context: {json.dumps(context)}\n\nUser: {user_message}"}
+            ],
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+        
+        return response.choices[0].message.content
+        """
+
+        # Example Claude API integration (commented out):
+        """
+        import anthropic
+        
+        client = anthropic.AsyncAnthropic(api_key=self.api_key)
+        
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            system=system_prompt,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Context: {json.dumps(context)}\n\nUser: {user_message}"
+                }
+            ]
+        )
+        
+        return response.content[0].text
+        """
+
+        # Temporary mock response for testing
+        mock_response = {
+            "intent": "book_appointment",
+            "confidence": 0.85,
+            "entities": {
+                "date": "2025-11-25",
+                "time": "14:00",
+                "service_type": None,
+                "appointment_id": None,
+            },
+            "missing_info": [],
+            "user_message": "I can help you book an appointment for November 25th at 2:00 PM. Would you like to confirm?",
+            "action": "proceed",
+            "metadata": {
+                "date_original": user_message,
+                "time_original": None,
+                "ambiguous_fields": [],
+            },
+        }
+
+        return json.dumps(mock_response)
+
+    def _build_context(
+        self,
+        message: str,
+        conversation_state: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Build context for LLM request.
+
+        Args:
+            message: Current user message
+            conversation_state: Previous conversation state
+
+        Returns:
+            Context dictionary with relevant information
+        """
+        context = {
+            "current_date": datetime.now().strftime("%Y-%m-%d"),
+            "current_time": datetime.now().strftime("%H:%M"),
+            "business_hours": {
+                "start": "09:00",
+                "end": "17:00",
+                "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+            },
+        }
+
+        if conversation_state:
+            context.update(
+                {
+                    "customer_id": conversation_state.get("customer_id"),
+                    "conversation_history": conversation_state.get("history", []),
+                    "last_intent": conversation_state.get("last_intent"),
+                    "pending_action": conversation_state.get("pending_action"),
+                }
+            )
+
+        return context
+
+    def _parse_llm_response(self, response: str) -> Dict[str, Any]:
+        """
+        Parse and validate LLM response.
+
+        Args:
+            response: Raw response from LLM
+
+        Returns:
+            Parsed and validated response dictionary
+
+        Raises:
+            LLMError: If response is invalid or cannot be parsed
+        """
+        try:
+            # Try to parse as JSON
+            parsed = json.loads(response)
+
+            # Validate required fields
+            required_fields = ["intent", "confidence", "entities", "user_message", "action"]
+            for field in required_fields:
+                if field not in parsed:
+                    raise ValueError(f"Missing required field: {field}")
+
+            # Validate intent
+            valid_intents = [
+                "book_appointment",
+                "check_availability",
+                "reschedule_appointment",
+                "cancel_appointment",
+                "smalltalk",
+            ]
+            if parsed["intent"] not in valid_intents:
+                logger.warning(f"Unknown intent: {parsed['intent']}, defaulting to smalltalk")
+                parsed["intent"] = "smalltalk"
+
+            # Validate confidence
+            if not 0 <= parsed["confidence"] <= 1:
+                logger.warning(f"Invalid confidence: {parsed['confidence']}, clamping to range")
+                parsed["confidence"] = max(0, min(1, parsed["confidence"]))
+
+            # Validate entities structure
+            if "entities" not in parsed or not isinstance(parsed["entities"], dict):
+                parsed["entities"] = {
+                    "date": None,
+                    "time": None,
+                    "service_type": None,
+                    "appointment_id": None,
+                }
+
+            # Ensure missing_info is a list
+            if "missing_info" not in parsed:
+                parsed["missing_info"] = []
+
+            # Ensure metadata exists
+            if "metadata" not in parsed:
+                parsed["metadata"] = {}
+
+            return parsed
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM response as JSON: {e}")
+            logger.debug(f"Raw response: {response}")
+
+            # Fallback response
+            return {
+                "intent": "smalltalk",
+                "confidence": 0.3,
+                "entities": {
+                    "date": None,
+                    "time": None,
+                    "service_type": None,
+                    "appointment_id": None,
+                },
+                "missing_info": [],
+                "user_message": "I'm sorry, I didn't quite understand that. Could you please rephrase?",
+                "action": "ask_clarification",
+                "metadata": {"parse_error": str(e)},
+            }
+
+    async def _enrich_response(
+        self,
+        parsed_response: Dict[str, Any],
+        conversation_state: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Enrich response with repository data if available.
+
+        Args:
+            parsed_response: Parsed LLM response
+            conversation_state: Current conversation state
+
+        Returns:
+            Enriched response with additional data
+        """
+        intent = parsed_response.get("intent")
+
+        # If we have repository callback, fetch relevant data
+        if self.repository_callback and intent == "check_availability":
+            entities = parsed_response.get("entities", {})
+            date_str = entities.get("date")
+
+            if date_str:
+                try:
+                    # Parse date and fetch availability
+                    appointment_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    available_slots = await self.repository_callback(
+                        "get_available_slots", date=appointment_date
+                    )
+
+                    # Add availability data to response
+                    parsed_response["available_slots"] = available_slots
+                    parsed_response["metadata"]["slots_fetched"] = True
+
+                except Exception as e:
+                    logger.error(f"Error fetching availability: {e}")
+                    parsed_response["metadata"]["slots_error"] = str(e)
+
+        return parsed_response
+
+    def extract_date_time(self, text: str, reference_date: Optional[date] = None) -> Dict[str, Any]:
+        """
+        Extract and normalize date/time from natural language.
+
+        This is a helper method for parsing dates like "tomorrow", "next Monday", etc.
+
+        Args:
+            text: Text containing date/time information
+            reference_date: Reference date for relative dates (defaults to today)
+
+        Returns:
+            Dictionary with normalized date and time
+
+        Example:
+            >>> result = llm.extract_date_time("tomorrow at 2pm")
+            >>> print(result["date"])
+            "2025-11-24"
+        """
+        if reference_date is None:
+            reference_date = date.today()
+
+        result = {"date": None, "time": None, "original_text": text}
+
+        text_lower = text.lower()
+
+        # Simple date extraction (can be enhanced with more sophisticated NLP)
+        if "tomorrow" in text_lower:
+            result["date"] = (reference_date + timedelta(days=1)).isoformat()
+        elif "today" in text_lower:
+            result["date"] = reference_date.isoformat()
+        elif "next week" in text_lower:
+            result["date"] = (reference_date + timedelta(days=7)).isoformat()
+
+        # Simple time extraction
+        import re
+
+        time_patterns = [
+            r"(\d{1,2}):(\d{2})\s*(am|pm)?",  # 2:30 pm
+            r"(\d{1,2})\s*(am|pm)",  # 2pm
+        ]
+
+        for pattern in time_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                hour = int(match.group(1))
+                minute = int(match.group(2)) if len(match.groups()) > 1 else 0
+
+                if len(match.groups()) >= 3 and match.group(3):
+                    # Handle AM/PM
+                    am_pm = match.group(3)
+                    if am_pm == "pm" and hour < 12:
+                        hour += 12
+                    elif am_pm == "am" and hour == 12:
+                        hour = 0
+
+                result["time"] = f"{hour:02d}:{minute:02d}"
+                break
+
+        return result
+
+    def validate_appointment_slot(
+        self, date_str: str, time_str: str
+    ) -> Dict[str, Any]:
+        """
+        Validate if the date/time is within business hours and in the future.
+
+        Args:
+            date_str: Date in YYYY-MM-DD format
+            time_str: Time in HH:MM format
+
+        Returns:
+            Validation result with is_valid flag and messages
+        """
+        result = {
+            "is_valid": True,
+            "errors": [],
+            "warnings": [],
+        }
+
+        try:
+            appointment_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            appointment_time = datetime.strptime(time_str, "%H:%M").time()
+            appointment_datetime = datetime.combine(appointment_date, appointment_time)
+
+            # Check if in the past
+            if appointment_datetime <= datetime.now():
+                result["is_valid"] = False
+                result["errors"].append("Appointment must be in the future")
+
+            # Check if weekend
+            if appointment_date.weekday() >= 5:  # Saturday = 5, Sunday = 6
+                result["is_valid"] = False
+                result["errors"].append("Appointments are only available Monday-Friday")
+
+            # Check business hours
+            business_start = datetime.strptime("09:00", "%H:%M").time()
+            business_end = datetime.strptime("17:00", "%H:%M").time()
+
+            if appointment_time < business_start or appointment_time >= business_end:
+                result["is_valid"] = False
+                result["errors"].append(
+                    "Appointment must be between 9:00 AM and 5:00 PM"
+                )
+
+            # Check if on 30-minute boundary
+            if appointment_time.minute not in [0, 30]:
+                result["warnings"].append(
+                    "Appointments are available in 30-minute slots (e.g., 9:00, 9:30)"
+                )
+
+        except ValueError as e:
+            result["is_valid"] = False
+            result["errors"].append(f"Invalid date or time format: {str(e)}")
+
+        return result

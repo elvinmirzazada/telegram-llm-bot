@@ -1,0 +1,97 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="DuplicatedCode" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <Languages>
+        <language minSize="194" name="Python" />
+        <language minSize="114" name="JavaScript" />
+      </Languages>
+    </inspection_tool>
+    <inspection_tool class="JSDuplicatedDeclaration" enabled="true" level="INFORMATION" enabled_by_default="true" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="INFORMATION" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="bcrypt" />
+          <option value="beautifulsoup4" />
+          <option value="cachetools" />
+          <option value="click" />
+          <option value="configparser" />
+          <option value="dateparser" />
+          <option value="exceptiongroup" />
+          <option value="google-api-core" />
+          <option value="google-api-python-client" />
+          <option value="google-auth" />
+          <option value="google-auth-httplib2" />
+          <option value="googleapis-common-protos" />
+          <option value="httplib2" />
+          <option value="humanize" />
+          <option value="imap-tools" />
+          <option value="lxml" />
+          <option value="maya" />
+          <option value="oauthlib" />
+          <option value="outcome" />
+          <option value="paramiko" />
+          <option value="pendulum" />
+          <option value="proto-plus" />
+          <option value="psutil" />
+          <option value="pyasn1_modules" />
+          <option value="PyNaCl" />
+          <option value="pyparsing" />
+          <option value="pysftp" />
+          <option value="PySocks" />
+          <option value="pytrends" />
+          <option value="pytzdata" />
+          <option value="regex" />
+          <option value="requests-oauthlib" />
+          <option value="selenium" />
+          <option value="selenium-stealth" />
+          <option value="snaptime" />
+          <option value="sortedcontainers" />
+          <option value="soupsieve" />
+          <option value="tenacity" />
+          <option value="trio" />
+          <option value="trio-websocket" />
+          <option value="tweepy" />
+          <option value="tzlocal" />
+          <option value="unshortenit" />
+          <option value="uritemplate" />
+          <option value="wsproto" />
+          <option value="xmltodict" />
+          <option value="aiofiles" />
+          <option value="bugsnag" />
+          <option value="dataclasses" />
+          <option value="flask" />
+          <option value="pillow" />
+          <option value="bs4" />
+          <option value="argparse" />
+          <option value="python-dotenv" />
+          <option value="django-scheduler" />
+          <option value="TwoCaptcha" />
+          <option value="instaloader" />
+          <option value="future" />
+          <option value="parsel" />
+          <option value="opencv-python" />
+          <option value="rembg" />
+          <option value="ipython" />
+          <option value="moviepy" />
+          <option value="matplotlib" />
+          <option value="torch" />
+          <option value="supervision" />
+          <option value="googletrans" />
+          <option value="anthropic" />
+          <option value="scrapy" />
+          <option value="appium-python-client" />
+          <option value="boto3" />
+          <option value="pytesseract" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyShadowingBuiltinsInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <option name="ignoredNames">
+        <list>
+          <option value="id" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
