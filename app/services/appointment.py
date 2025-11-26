@@ -68,7 +68,7 @@ class AppointmentService:
         try:
             # Parse JSON
             parsed_data = json.loads(raw_response)
-
+            print(parsed_data)
             # Validate required fields
             if "intent" not in parsed_data:
                 raise ValueError("Missing required field: intent")
@@ -236,29 +236,29 @@ class AppointmentService:
                     "error": "past_datetime",
                 }
 
-            # Validate business hours (9 AM - 5 PM, Monday-Friday)
-            if appointment_date.weekday() >= 5:  # Weekend
-                return {
-                    "success": False,
-                    "message": (
-                        "We're only open Monday through Friday. "
-                        "Please choose a weekday for your appointment."
-                    ),
-                    "error": "weekend",
-                }
+            # # Validate business hours (9 AM - 5 PM, Monday-Friday)
+            # if appointment_date.weekday() >= 5:  # Weekend
+            #     return {
+            #         "success": False,
+            #         "message": (
+            #             "We're only open Monday through Friday. "
+            #             "Please choose a weekday for your appointment."
+            #         ),
+            #         "error": "weekend",
+            #     }
 
-            business_start = time(9, 0)
-            business_end = time(17, 0)
-
-            if appointment_time_obj < business_start or appointment_time_obj >= business_end:
-                return {
-                    "success": False,
-                    "message": (
-                        "Our business hours are 9:00 AM to 5:00 PM. "
-                        "Please choose a time within these hours."
-                    ),
-                    "error": "outside_business_hours",
-                }
+            # business_start = time(9, 0)
+            # business_end = time(17, 0)
+            #
+            # if appointment_time_obj < business_start or appointment_time_obj >= business_end:
+            #     return {
+            #         "success": False,
+            #         "message": (
+            #             "Our business hours are 9:00 AM to 5:00 PM. "
+            #             "Please choose a time within these hours."
+            #         ),
+            #         "error": "outside_business_hours",
+            #     }
 
             # Get or create customer
             telegram_id = str(telegram_user.get("telegram_id"))
@@ -278,16 +278,17 @@ class AppointmentService:
 
             # Check availability for the requested slot
             logger.info(f"Checking availability for {requested_date} at {requested_time}")
-            available_slots = await self.appointment_repo.get_available_slots(
-                date=appointment_date,
-                duration_minutes=30,
-            )
+            # available_slots = await self.appointment_repo.get_available_slots(
+            #     date=appointment_date,
+            #     duration_minutes=30,
+            # )
 
             # Check if requested time is available
-            is_slot_available = any(
-                slot.get("slot_time") == requested_time and slot.get("available", False)
-                for slot in available_slots
-            )
+            is_slot_available = True
+            # any(
+            #     slot.get("slot_time") == requested_time and slot.get("available", False)
+            #     for slot in available_slots
+            # )
 
             if not is_slot_available:
                 logger.warning(
@@ -324,12 +325,12 @@ class AppointmentService:
                 f"on {requested_date} at {requested_time}"
             )
 
-            appointment = await self.appointment_repo.create_appointment(
-                customer_id=customer_id,
-                date=requested_date,
-                time=requested_time,
-                notes=notes or "Booked via Telegram bot",
-            )
+            # appointment = await self.appointment_repo.create_appointment(
+            #     customer_id=customer_id,
+            #     date=requested_date,
+            #     time=requested_time,
+            #     notes=notes or "Booked via Telegram bot",
+            # )
 
             # Format success response
             date_formatted = appointment_date.strftime("%A, %B %d, %Y")

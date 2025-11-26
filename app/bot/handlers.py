@@ -320,15 +320,18 @@ async def handle_text_message(message: Message) -> None:
 
     try:
         telegram_user = get_telegram_user_dict(message)
-
+        await message.answer("Preparing an answer, please wait...")
         # Show typing indicator
         await message.bot.send_chat_action(
             chat_id=message.chat.id,
             action="typing"
         )
 
-        # Get database session
-        async for db in get_db_session():
+        # Get database session - use single iteration properly
+        db_generator = get_db_session()
+        db = await db_generator.__anext__()
+
+        try:
             # Get or create conversation state
             conversation_state = await get_or_create_conversation_state(
                 user.id, db
@@ -354,7 +357,7 @@ async def handle_text_message(message: Message) -> None:
             llm_service = LocalLLMService(
                 repository_callback=create_repository_callback(db)
             )
-            # appointment_service = AppointmentService(db)
+            appointment_service = AppointmentService(db)
 
             try:
                 # Send to LLM for processing
@@ -369,86 +372,85 @@ async def handle_text_message(message: Message) -> None:
                     f"Confidence: {llm_response.get('confidence')}"
                 )
 
-                # # Parse LLM output
-                # parsed_data = await appointment_service.parse_llm_output(
-                #     raw_response=llm_response if isinstance(llm_response, str)
-                #     else str(llm_response)
-                # )
-                #
-                # # Update conversation state
-                # conversation_state["last_intent"] = parsed_data.get("intent")
+                # Parse LLM output
+                parsed_data = await appointment_service.parse_llm_output(
+                    raw_response=llm_response if isinstance(llm_response, str)
+                    else str(llm_response)
+                )
 
-                # # Handle different intents
-                # intent = parsed_data.get("intent")
-                # response_message = None
-                #
-                # if intent == "book_appointment":
-                #     logger.info(f"Handling booking intent for user {user.id}")
-                #     result = await appointment_service.handle_booking_intent(
-                #         parsed_data=parsed_data,
-                #         db=db,
-                #         telegram_user=telegram_user,
-                #     )
-                #     response_message = result["message"]
-                #
-                # elif intent == "check_availability":
-                #     logger.info(f"Handling availability intent for user {user.id}")
-                #     result = await appointment_service.handle_availability_intent(
-                #         parsed_data=parsed_data,
-                #         db=db,
-                #     )
-                #     response_message = result["message"]
-                #
-                # elif intent == "reschedule_appointment":
-                #     logger.info(f"Handling reschedule intent for user {user.id}")
-                #     result = await appointment_service.handle_reschedule_intent(
-                #         parsed_data=parsed_data,
-                #         db=db,
-                #         telegram_user=telegram_user,
-                #     )
-                #     response_message = result["message"]
-                #
-                # elif intent == "cancel_appointment":
-                #     logger.info(f"Handling cancel intent for user {user.id}")
-                #     result = await appointment_service.handle_cancel_intent(
-                #         parsed_data=parsed_data,
-                #         db=db,
-                #         telegram_user=telegram_user,
-                #     )
-                #     response_message = result["message"]
-                #
-                # elif intent == "smalltalk":
-                #     logger.info(f"Handling smalltalk for user {user.id}")
-                #     # Use LLM's generated response for smalltalk
-                #     response_message = parsed_data.get(
-                #         "user_message",
-                #         "I'm here to help you with appointments! "
-                #         "You can book, check availability, reschedule, or cancel appointments."
-                #     )
-                #
-                # else:
-                #     logger.warning(f"Unknown intent: {intent}")
-                #     response_message = (
-                #         "I'm not quite sure what you'd like to do. "
-                #         "Could you please rephrase? I can help you book, "
-                #         "check availability, reschedule, or cancel appointments."
-                #     )
-                response_message = None
-                # Send response to user
+                # Update conversation state
+                conversation_state["last_intent"] = parsed_data.get("intent")
+
+                # Handle different intents
+                intent = parsed_data.get("intent")
+
+                if intent == "book_appointment":
+                    logger.info(f"Handling booking intent for user {user.id}")
+                    result = await appointment_service.handle_booking_intent(
+                        parsed_data=parsed_data,
+                        db=db,
+                        telegram_user=telegram_user,
+                    )
+                    response_message = result["message"]
+
+                elif intent == "check_availability":
+                    logger.info(f"Handling availability intent for user {user.id}")
+                    result = await appointment_service.handle_availability_intent(
+                        parsed_data=parsed_data,
+                        db=db,
+                    )
+                    response_message = result["message"]
+
+                elif intent == "reschedule_appointment":
+                    logger.info(f"Handling reschedule intent for user {user.id}")
+                    result = await appointment_service.handle_reschedule_intent(
+                        parsed_data=parsed_data,
+                        db=db,
+                        telegram_user=telegram_user,
+                    )
+                    response_message = result["message"]
+
+                elif intent == "cancel_appointment":
+                    logger.info(f"Handling cancel intent for user {user.id}")
+                    result = await appointment_service.handle_cancel_intent(
+                        parsed_data=parsed_data,
+                        db=db,
+                        telegram_user=telegram_user,
+                    )
+                    response_message = result["message"]
+
+                elif intent == "smalltalk":
+                    logger.info(f"Handling smalltalk for user {user.id}")
+                    # Use LLM's generated response for smalltalk
+                    response_message = parsed_data.get(
+                        "user_message",
+                        "I'm here to help you with appointments! "
+                        "You can book, check availability, reschedule, or cancel appointments."
+                    )
+
+                else:
+                    logger.warning(f"Unknown intent: {intent}")
+                    response_message = (
+                        "I'm not quite sure what you'd like to do. "
+                        "Could you please rephrase? I can help you book, "
+                        "check availability, reschedule, or cancel appointments."
+                    )
+
+                # Send response to user (ONCE)
                 if response_message:
                     await message.answer(response_message)
 
-                    # # Save bot response
-                    # await save_conversation_message(
-                    #     db,
-                    #     conversation_state.get("customer_id"),
-                    #     response_message,
-                    #     "bot",
-                    #     context_data={
-                    #         "intent": intent,
-                    #         "confidence": parsed_data.get("confidence"),
-                    #     },
-                    # )
+                    # Save bot response
+                    await save_conversation_message(
+                        db,
+                        conversation_state.get("customer_id"),
+                        response_message,
+                        "bot",
+                        context_data={
+                            "intent": intent,
+                            "confidence": parsed_data.get("confidence"),
+                        },
+                    )
 
                     # Add to conversation history
                     conversation_state["history"].append({
@@ -475,7 +477,12 @@ async def handle_text_message(message: Message) -> None:
                     "Please try again or contact support if the problem continues."
                 )
 
-            break
+        finally:
+            # Properly close the database session
+            try:
+                await db_generator.aclose()
+            except:
+                pass
 
     except Exception as e:
         logger.error(

@@ -84,92 +84,6 @@ Required JSON structure:
 - If intent is unclear: set confidence < 0.7 and ask clarifying question
 - For cancellation: require appointment_id or date+time to identify appointment
 
-## Examples:
-
-User: "I want to book an appointment tomorrow at 2pm"
-Response:
-{
-    "intent": "book_appointment",
-    "confidence": 0.95,
-    "entities": {
-        "date": "2025-11-26",
-        "time": "14:00",
-        "service_type": null,
-        "appointment_id": null
-    },
-    "missing_info": [],
-    "user_message": "I can book you for tomorrow, November 26th at 2:00 PM. Would you like to confirm this appointment?",
-    "action": "proceed",
-    "metadata": {
-        "date_original": "tomorrow",
-        "time_original": "2pm",
-        "ambiguous_fields": []
-    }
-}
-
-User: "I need to come in next week"
-Response:
-{
-    "intent": "book_appointment",
-    "confidence": 0.85,
-    "entities": {
-        "date": null,
-        "time": null,
-        "service_type": null,
-        "appointment_id": null
-    },
-    "missing_info": ["date", "time"],
-    "user_message": "I'd be happy to help you book an appointment for next week. Which day works best for you? We're open Monday through Friday, 9 AM to 5 PM.",
-    "action": "ask_clarification",
-    "metadata": {
-        "date_original": "next week",
-        "time_original": null,
-        "ambiguous_fields": ["date", "time"]
-    }
-}
-
-User: "What's available on Friday?"
-Response:
-{
-    "intent": "check_availability",
-    "confidence": 0.90,
-    "entities": {
-        "date": "2025-11-28",
-        "time": null,
-        "service_type": null,
-        "appointment_id": null
-    },
-    "missing_info": [],
-    "user_message": "Let me check available time slots for Friday, November 28th.",
-    "action": "proceed",
-    "metadata": {
-        "date_original": "Friday",
-        "time_original": null,
-        "ambiguous_fields": []
-    }
-}
-
-User: "Cancel my appointment"
-Response:
-{
-    "intent": "cancel_appointment",
-    "confidence": 0.80,
-    "entities": {
-        "date": null,
-        "time": null,
-        "service_type": null,
-        "appointment_id": null
-    },
-    "missing_info": ["appointment_id"],
-    "user_message": "I can help you cancel your appointment. Could you tell me which appointment you'd like to cancel? You can specify the date and time, or I can show you your upcoming appointments.",
-    "action": "ask_clarification",
-    "metadata": {
-        "date_original": null,
-        "time_original": null,
-        "ambiguous_fields": ["appointment_id"]
-    }
-}
-
 ## Important Notes:
 - Always be polite and professional
 - If user provides partial information, acknowledge what you have and ask for what's missing
@@ -181,10 +95,10 @@ Response:
     def __init__(
         self,
         repository_callback: Optional[Callable] = None,
-        host: str = settings.llm_host,
-        model: str = "appointment-bot",
-        temperature: float = 0.7,
-        max_tokens: int = 500,
+        host: str = "http://localhost:11434",
+        model: str = "llama3",
+        temperature: float = 0.8,
+        max_tokens: int = 1500,
     ):
         """
         Initialize Local LLM Service.
@@ -304,17 +218,18 @@ Response:
 
             # Make request to Ollama API
             response = requests.post(
-                f"{self.host}",
+                f"{self.host}/api/generate",
                 json={
                     "model": self.model,
                     "prompt": full_prompt,
                     "stream": False,
                     "options": {
                         "temperature": self.temperature,
-                        "num_predict": self.max_tokens,
+                        "num_ctx": self.max_tokens,
+                        "num_predict": 200,
                     }
                 },
-                timeout=30
+                timeout=60
             )
 
             if response.status_code != 200:
@@ -395,22 +310,53 @@ Response:
             LocalLLMError: If response is invalid or cannot be parsed
         """
         try:
-            # Extract JSON from response (in case model adds extra text)
-            # Look for JSON object in the response
-            json_start = response.find('{')
-            json_end = response.rfind('}') + 1
-            
-            if json_start == -1 or json_end == 0:
-                raise ValueError("No JSON object found in response")
-            
-            json_str = response[json_start:json_end]
+            # Log the raw response for debugging
+            logger.debug(f"Parsing LLM response: {response[:500]}")
+
+            # Try to extract JSON from response
+            # Remove markdown code blocks if present
+            response_clean = response.strip()
+            logger.info(response_clean)
+            if response_clean.startswith("```"):
+                # Remove ```json or ``` at start
+                response_clean = response_clean.split('\n', 1)[1] if '\n' in response_clean else response_clean[3:]
+                # Remove ``` at end
+                if response_clean.endswith("```"):
+                    response_clean = response_clean[:-3]
+
+            # Find JSON object using regex as fallback
+            import re
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_clean, re.DOTALL)
+
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                # Try traditional approach
+                json_start = response_clean.find('{')
+                json_end = response_clean.rfind('}') + 1
+
+                if json_start == -1 or json_end == 0:
+                    raise ValueError("No JSON object found in response")
+
+                json_str = response_clean[json_start:json_end]
+
             parsed = json.loads(json_str)
 
             # Validate required fields
             required_fields = ["intent", "confidence", "entities", "user_message", "action"]
             for field in required_fields:
                 if field not in parsed:
-                    raise ValueError(f"Missing required field: {field}")
+                    logger.warning(f"Missing field {field}, adding default")
+                    if field == "intent":
+                        parsed["intent"] = "smalltalk"
+                    elif field == "confidence":
+                        parsed["confidence"] = 0.5
+                    elif field == "entities":
+                        parsed["entities"] = {"date": None, "time": None, "service_type": None, "appointment_id": None}
+                    elif field == "user_message":
+                        parsed["user_message"] = "I'm here to help with appointments."
+                    elif field == "action":
+                        parsed["action"] = "ask_clarification"
 
             # Validate intent
             valid_intents = [
@@ -446,11 +392,12 @@ Response:
             if "metadata" not in parsed:
                 parsed["metadata"] = {}
 
+            logger.info(f"Successfully parsed intent: {parsed['intent']} with confidence: {parsed['confidence']}")
             return parsed
 
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Failed to parse LLM response as JSON: {e}")
-            logger.debug(f"Raw response: {response}")
+            logger.error(f"Raw response was: {response[:1000]}")
 
             # Fallback response
             return {
